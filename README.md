@@ -1,4 +1,7 @@
-NeuralNote but with nicer backgrounds
+**NeuralNote** but with nicer backgrounds and the ability to swap background
+
+Red <img style="float: right;" src="NeuralNote/Assets/background2.png" width="100" />
+Black <img style="float: right;" src="NeuralNote/Assets/background3.png" width="100" />
 
 ## Credits
 
