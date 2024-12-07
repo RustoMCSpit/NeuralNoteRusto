@@ -7,24 +7,23 @@
 
 #include <JuceHeader.h>
 #include "NoteUtils.h"
-#include "Constants.h"
+#include "BasicPitchConstants.h"
 #include "UIDefines.h"
 
 class QuantizeForceSlider : public Component
 {
 public:
-    QuantizeForceSlider(std::atomic<float>& inAttachedMaxValue, const std::function<void()>& inOnValueChange);
+    QuantizeForceSlider(RangedAudioParameter& inAttachedValue);
 
     void resized() override;
 
     void paint(Graphics& g) override;
 
+    void setTooltip(const String& inTooltip);
+
 private:
     juce::Slider mSlider;
-
-    std::atomic<float>& mAttachedValue;
-
-    std::function<void()> mOnValueChanged;
+    std::unique_ptr<juce::SliderParameterAttachment> mAttachment;
 };
 
 #endif // HorizontalSlider_h

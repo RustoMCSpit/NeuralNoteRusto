@@ -12,42 +12,51 @@
 #include "MidiFileDrag.h"
 #include "PluginProcessor.h"
 #include "VisualizationPanel.h"
+#include "NumericTextEditor.h"
 
-class VisualizationPanel : public juce::Component,
-                           public juce::Timer // To update play/pause button state from processor
+class VisualizationPanel : public Component
 {
 public:
-    explicit VisualizationPanel(NeuralNoteAudioProcessor& processor);
+    explicit VisualizationPanel(NeuralNoteAudioProcessor* processor);
+
+    ~VisualizationPanel() override = default;
 
     void resized() override;
 
     void paint(Graphics& g) override;
 
-    void timerCallback() override;
-
     void clear();
-
-    void startTimerHzAudioThumbnail(int inFreqHz);
-
-    void stopTimerAudioThumbnail();
 
     void repaintPianoRoll();
 
     void setMidiFileDragComponentVisible();
 
+    void mouseEnter(const MouseEvent& event) override;
+
+    void mouseExit(const MouseEvent& event) override;
+
+    Viewport& getAudioMidiViewport();
+
+    CombinedAudioMidiRegion& getCombinedAudioMidiRegion();
+
     static constexpr int KEYBOARD_WIDTH = 50;
 
 private:
-    NeuralNoteAudioProcessor& mProcessor;
+    NeuralNoteAudioProcessor* mProcessor;
     Keyboard mKeyboard;
-    juce::Viewport mAudioMidiViewport;
+    Viewport mAudioMidiViewport;
     CombinedAudioMidiRegion mCombinedAudioMidiRegion;
     MidiFileDrag mMidiFileDrag;
 
-    juce::TextButton mPlayPauseButton;
-    juce::TextButton mResetButton;
+    Slider mAudioGainSlider;
+    std::unique_ptr<SliderParameterAttachment> mAudioGainSliderAttachment;
 
-    std::unique_ptr<juce::TextEditor> mFileTempo;
+    Slider mMidiGainSlider;
+    std::unique_ptr<SliderParameterAttachment> mMidiGainSliderAttachment;
+
+    Rectangle<int> mAudioRegionBounds;
+    Rectangle<int> mPianoRollBounds;
+
+    std::unique_ptr<NumericTextEditor<double>> mFileTempo;
 };
-
 #endif // VisualizationPanel_h

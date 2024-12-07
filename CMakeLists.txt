@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(NeuralNotePlugin VERSION 0.0.1)
+project(NeuralNotePlugin VERSION 1.0.0)
 
 # C++ settings
 set(CMAKE_CXX_STANDARD 17)
@@ -7,12 +7,14 @@ enable_language(CXX)
 
 #Compile commands, useful for some IDEs like VS-Code
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
+set(CMAKE_POSITION_INDEPENDENT_CODE TRUE)
 
 #Minimum MacOS target, set globally
 set(CMAKE_OSX_DEPLOYMENT_TARGET "10.11" CACHE STRING "Minimum OS X deployment version" FORCE)
 
 option(UniversalBinary "Build universal binary for mac" OFF)
 option(RTNeural_Release "When CMAKE_BUILD_TYPE=Debug, overwrite it to Release for RTNeural only" OFF)
+option(LTO "Enable Link Time Optimization" ON)
 
 if (UniversalBinary)
     set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE INTERNAL "")
@@ -39,14 +41,16 @@ juce_add_plugin("${BaseTargetName}"
         ICON_BIG "${CMAKE_CURRENT_LIST_DIR}/NeuralNote/Assets/logo.png"
         ICON_SMALL "${CMAKE_CURRENT_LIST_DIR}/NeuralNote/Assets/logo.png"
         COMPANY_NAME "Dr. Audio"
+        BUNDLE_ID "com.draudio.neuralnote"
         IS_SYNTH FALSE
         NEEDS_MIDI_INPUT FALSE
-        NEEDS_MIDI_OUTPUT FALSE
+        NEEDS_MIDI_OUTPUT TRUE
         IS_MIDI_EFFECT FALSE
         EDITOR_WANTS_KEYBOARD_FOCUS FALSE
         COPY_PLUGIN_AFTER_BUILD ${COPY_PLUGIN_AFTER_BUILD}
         MICROPHONE_PERMISSION_ENABLED TRUE
         MICROPHONE_PERMISSION_TEXT "Need access to Microphone"
+        HARDENED_RUNTIME_ENABLED TRUE
         PLUGIN_MANUFACTURER_CODE DrAu
         PLUGIN_CODE NRNT
         FORMATS AU VST3 Standalone
@@ -86,7 +90,8 @@ endforeach ()
 file(GLOB RESOURCES_FILES ${CMAKE_CURRENT_LIST_DIR}/Lib/ModelData/*.json
         ${CMAKE_CURRENT_LIST_DIR}/Lib/ModelData/*.ort
         ${CMAKE_CURRENT_LIST_DIR}/NeuralNote/Assets/*.ttf
-        ${CMAKE_CURRENT_LIST_DIR}/NeuralNote/Assets/*.png)
+        ${CMAKE_CURRENT_LIST_DIR}/NeuralNote/Assets/*.png
+        ${CMAKE_CURRENT_LIST_DIR}/NeuralNote/Assets/*.svg)
 
 juce_add_binary_data(bin_data SOURCES ${RESOURCES_FILES})
 
@@ -102,6 +107,7 @@ endif ()
 target_link_libraries(BasicPitchCNN PUBLIC RTNeural bin_data)
 
 target_include_directories(${BaseTargetName} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/ONNXRuntime/${ONNXRUNTIME_DIRNAME}/include)
+target_include_directories(${BaseTargetName} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/ThirdParty/minimp3)
 
 target_compile_definitions(${BaseTargetName}
         PUBLIC
@@ -120,16 +126,19 @@ elseif (WIN32)
     set_target_properties(onnxruntime PROPERTIES
             IMPORTED_LINK_INTERFACE_LANGUAGES_RELEASE "CXX"
             IMPORTED_LOCATION_RELEASE "${CMAKE_CURRENT_LIST_DIR}/ThirdParty/onnxruntime/lib/onnxruntime.lib"
-            )
+    )
     set_target_properties(onnxruntime PROPERTIES
             MAP_IMPORTED_CONFIG_DEBUG Release
             MAP_IMPORTED_CONFIG_MINSIZEREL Release
             MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release
-            )
+    )
+elseif (UNIX)
+    set_property(TARGET onnxruntime PROPERTY IMPORTED_LOCATION ${CMAKE_CURRENT_LIST_DIR}/ThirdParty/onnxruntime/lib/libonnxruntime.a)
 endif ()
 
 
 target_include_directories("${BaseTargetName}" PRIVATE ${CMAKE_CURRENT_LIST_DIR}/ThirdParty/onnxruntime/include)
+
 
 target_link_libraries(${BaseTargetName}
         PRIVATE
@@ -139,9 +148,11 @@ target_link_libraries(${BaseTargetName}
         onnxruntime
         bin_data
         PUBLIC
-        juce_recommended_config_flags
-        juce_recommended_lto_flags)
-# juce_recommended_warning_flags)
+        juce_recommended_config_flags)
+
+if (${LTO})
+    target_link_libraries(${BaseTargetName} PUBLIC juce_recommended_lto_flags)
+endif ()
 
 if (BUILD_UNIT_TESTS)
     add_subdirectory(Tests)
@@ -151,4 +162,10 @@ target_compile_definitions(${BaseTargetName}
         PRIVATE
         SAVE_DOWNSAMPLED_AUDIO=0
         USE_TEST_NOTE_FRAME_TO_TIME=0
-        )
+)
+
+if (WIN32)
+    target_compile_definitions(${BaseTargetName} PUBLIC JUCE_ASIO=1)
+    target_include_directories(${BaseTargetName} PRIVATE ThirdParty/ASIO/common)
+endif ()
+

@@ -7,16 +7,17 @@
 
 #include <JuceHeader.h>
 
-#include "Constants.h"
+#include "BasicPitchConstants.h"
 #include "Notes.h"
+#include "TimeQuantizeOptions.h"
 
 class MidiFileWriter
 {
 public:
     bool writeMidiFile(const std::vector<Notes::Event>& inNoteEvents,
-                       juce::File& fileToUse,
-                       const juce::Optional<juce::AudioPlayHead::PositionInfo>& inInfoStart,
-                       double inBPM,
+                       const File& fileToUse,
+                       const TimeQuantizeOptions::TimeQuantizeInfo& inInfo,
+                       double inExportBpm,
                        PitchBendModes inPitchBendMode) const;
 
 private:

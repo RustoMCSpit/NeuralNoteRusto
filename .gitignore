@@ -2,10 +2,9 @@
 
 SDKs
 
-build
+build*
 
-cmake-build-debug
-cmake-build-release
+cmake-*
 CMakeFiles
 CMakeCache.txt
 cmake_install.cmake
@@ -26,3 +25,4 @@ Makefile
 *.ort
 onnxruntime*.tar.gz
 ThirdParty/onnxruntime
+/Installers/Windows/Output/

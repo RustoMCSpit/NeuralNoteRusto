@@ -1,46 +1,40 @@
 #pragma once
 
-#include "atomic"
+#include <atomic>
 #include <JuceHeader.h>
 
-#include "DownSampler.h"
+#include "Resampler.h"
 #include "ProcessorBase.h"
 #include "BasicPitch.h"
 #include "NoteOptions.h"
 #include "MidiFileWriter.h"
-#include "RhythmOptions.h"
+#include "TimeQuantizeOptions.h"
 #include "Player.h"
+#include "SourceAudioManager.h"
+#include "ParameterHelpers.h"
+#include "TranscriptionManager.h"
+#include "NnId.h"
+
+class NeuralNoteMainView;
+class NeuralNoteEditor;
 
 enum State { EmptyAudioAndMidiRegions = 0, Recording, Processing, PopulatedAudioAndMidiRegions };
 
 class NeuralNoteAudioProcessor : public PluginHelpers::ProcessorBase
 {
 public:
-    struct Parameters {
-        std::atomic<float> noteSensibility = 0.7;
-        std::atomic<float> splitSensibility = 0.5;
-        std::atomic<float> minNoteDurationMs = 125;
-        std::atomic<int> pitchBendMode = NoPitchBend;
-
-        std::atomic<int> minMidiNote = MIN_MIDI_NOTE;
-        std::atomic<int> maxMidiNote = MAX_MIDI_NOTE;
-        std::atomic<int> keyRootNote = NoteUtils::C;
-        std::atomic<int> keyType = NoteUtils::Chromatic;
-        std::atomic<int> keySnapMode = 1;
-
-        std::atomic<int> rhythmTimeDivision = RhythmUtils::_1_8;
-        std::atomic<float> rhythmQuantizationForce = 0.0f;
-    };
-
     NeuralNoteAudioProcessor();
+
+    ~NeuralNoteAudioProcessor() override;
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
 
-    void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    void processBlock(AudioBuffer<float>&, MidiBuffer&) override;
 
-    juce::AudioProcessorEditor* createEditor() override;
+    AudioProcessorEditor* createEditor() override;
 
-    void getStateInformation(juce::MemoryBlock& destData) override;
+    void getStateInformation(MemoryBlock& destData) override;
+
     void setStateInformation(const void* data, int sizeInBytes) override;
 
     State getState() const { return mState.load(); }
@@ -49,89 +43,47 @@ public:
 
     void setStateToProcessing() { mState.store(Processing); }
 
+    void setStateToPopulatedAudioAndMidiRegions() { mState.store(PopulatedAudioAndMidiRegions); }
+
     void clear();
 
-    AudioBuffer<float>& getAudioBufferForMidi();
+    SourceAudioManager* getSourceAudioManager() const;
 
-    int getNumSamplesAcquired() const;
+    Player* getPlayer() const;
 
-    /* Returns the duration in seconds of the audio acquired for transcription */
-    double getAudioSampleDuration() const;
+    TranscriptionManager* getTranscriptionManager() const;
 
-    void setNumSamplesAcquired(int inNumSamplesAcquired);
+    std::array<RangedAudioParameter*, ParameterHelpers::TotalNumParams>& getParams();
 
-    void launchTranscribeJob();
+    float getParameterValue(ParameterHelpers::ParamIdEnum inParamId) const;
 
-    const std::vector<Notes::Event>& getNoteEventVector() const;
+    NeuralNoteMainView* getNeuralNoteMainView() const;
 
-    void updateTranscription();
+    AudioProcessorValueTreeState& getAPVTS();
 
-    void updatePostProcessing();
+    ValueTree& getValueTree();
 
-    Parameters* getCustomParameters();
+    void addListenerToStateValueTree(ValueTree::Listener* inListener);
 
-    const juce::Optional<juce::AudioPlayHead::PositionInfo>& getPlayheadInfoOnRecordStart();
-
-    // Value tree state to pass automatable parameters from UI
-    juce::AudioProcessorValueTreeState mTree;
-    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
-
-    void setFileDrop(const std::string& inFilename);
-
-    std::string getDroppedFilename() const;
-
-    bool canQuantize() const;
-
-    std::string getTempoStr() const;
-
-    std::string getTimeSignatureStr() const;
-
-    void setMidiFileTempo(double inMidiFileTempo);
-
-    double getMidiFileTempo() const;
-
-    bool isJobRunningOrQueued() const;
-
-    Player* getPlayer();
+    void removeListenerFromStateValueTree(ValueTree::Listener* inListener);
 
 private:
-    void _runModel();
+    static ValueTree _createDefaultValueTree();
+
+    void _updateValueTree(const ValueTree& inNewState);
+
+    // ValueTree for general plugin state
+    ValueTree mValueTree = _createDefaultValueTree();
+
+    // Value tree state to pass automatable parameters from UI
+    AudioProcessorValueTreeState mAPVTS;
+
+    std::array<RangedAudioParameter*, ParameterHelpers::TotalNumParams> mParams {};
 
     std::atomic<State> mState = EmptyAudioAndMidiRegions;
 
-    AudioBuffer<float> mMonoBuffer;
-    DownSampler mDownSampler;
-
-    Parameters mParameters;
-    bool mWasRecording = false;
-    bool mIsPlayheadPlaying = false;
-
-    std::atomic<double> mCurrentTempo = -1.0;
-    std::atomic<int> mCurrentTimeSignatureNum = -1;
-    std::atomic<int> mCurrentTimeSignatureDenom = -1;
-
-    AudioBuffer<float> mAudioBufferForMIDITranscription;
-
-    double mMidiFileTempo = 120.0;
-
-    BasicPitch mBasicPitch;
-    NoteOptions mNoteOptions;
-    RhythmOptions mRhythmOptions;
-
-    std::string mDroppedFilename;
-
-    std::vector<Notes::Event> mPostProcessedNotes;
-
+    std::unique_ptr<SourceAudioManager> mSourceAudioManager;
     std::unique_ptr<Player> mPlayer;
-
-    juce::Optional<juce::AudioPlayHead::PositionInfo> mPlayheadInfoStartRecord;
-
-    // Thread pool to run ML in background thread.
-    juce::ThreadPool mThreadPool;
-    std::function<void()> mJobLambda;
-
-    int mNumSamplesAcquired = 0;
-    const double mBasicPitchSampleRate = 22050.0;
-    const double mMaxDuration = 3 * 60;
-    const int mMaxNumSamplesToConvert = static_cast<int>(mBasicPitchSampleRate * mMaxDuration);
+    std::unique_ptr<TranscriptionManager> mTranscriptionManager;
+    std::unique_ptr<FileLogger> mLogger;
 };

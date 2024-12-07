@@ -7,10 +7,16 @@
 void BasicPitch::reset()
 {
     mBasicPitchCNN.reset();
+    mNotesCreator.clear();
+
     mContoursPG.clear();
+    mContoursPG.shrink_to_fit();
     mNotesPG.clear();
+    mNotesPG.shrink_to_fit();
     mOnsetsPG.clear();
+    mOnsetsPG.shrink_to_fit();
     mNoteEvents.clear();
+    mNoteEvents.shrink_to_fit();
 
     mNumFrames = 0;
 }
@@ -20,7 +26,8 @@ void BasicPitch::setParameters(float inNoteSensibility, float inSplitSensibility
     mParams.frameThreshold = 1.0f - inNoteSensibility;
     mParams.onsetThreshold = 1.0f - inSplitSensibility;
 
-    mParams.minNoteLength = static_cast<int>(std::round(inMinNoteDurationMs * FFT_HOP / BASIC_PITCH_SAMPLE_RATE));
+    mParams.minNoteLengthFrames =
+        static_cast<int>(std::round(inMinNoteDurationMs / 1000.0f / (FFT_HOP / BASIC_PITCH_SAMPLE_RATE)));
 
     mParams.pitchBend = MultiPitchBend;
     mParams.melodiaTrick = true;
@@ -51,9 +58,13 @@ void BasicPitch::transcribeToMIDI(float* inAudio, int inNumSamples)
 
     const float* stacked_cqt = mFeaturesCalculator.computeFeatures(inAudio, inNumSamples, mNumFrames);
 
-    mOnsetsPG.resize(mNumFrames, std::vector<float>(NUM_FREQ_OUT, 0.0f));
-    mNotesPG.resize(mNumFrames, std::vector<float>(NUM_FREQ_OUT, 0.0f));
-    mContoursPG.resize(mNumFrames, std::vector<float>(NUM_FREQ_IN, 0.0f));
+    mOnsetsPG.resize(mNumFrames, std::vector<float>(static_cast<size_t>(NUM_FREQ_OUT), 0.0f));
+    mNotesPG.resize(mNumFrames, std::vector<float>(static_cast<size_t>(NUM_FREQ_OUT), 0.0f));
+    mContoursPG.resize(mNumFrames, std::vector<float>(static_cast<size_t>(NUM_FREQ_IN), 0.0f));
+
+    mOnsetsPG.shrink_to_fit();
+    mNotesPG.shrink_to_fit();
+    mContoursPG.shrink_to_fit();
 
     mBasicPitchCNN.reset();
 
@@ -88,12 +99,12 @@ void BasicPitch::transcribeToMIDI(float* inAudio, int inNumSamples)
                                       mOnsetsPG[frame_idx - num_lh_frames]);
     }
 
-    mNoteEvents = mNotesCreator.convert(mNotesPG, mOnsetsPG, mContoursPG, mParams);
+    mNoteEvents = mNotesCreator.convert(mNotesPG, mOnsetsPG, mContoursPG, mParams, true);
 }
 
 void BasicPitch::updateMIDI()
 {
-    mNoteEvents = mNotesCreator.convert(mNotesPG, mOnsetsPG, mContoursPG, mParams);
+    mNoteEvents = mNotesCreator.convert(mNotesPG, mOnsetsPG, mContoursPG, mParams, false);
 }
 
 const std::vector<Notes::Event>& BasicPitch::getNoteEvents() const

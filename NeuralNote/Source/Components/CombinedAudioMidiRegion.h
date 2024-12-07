@@ -15,18 +15,19 @@
 class CombinedAudioMidiRegion
     : public Component
     , public FileDragAndDropTarget
-    , public Timer
+    , public ChangeListener
+    , public ValueTree::Listener
 {
 public:
-    CombinedAudioMidiRegion(NeuralNoteAudioProcessor& processor, Keyboard& keyboard);
+    CombinedAudioMidiRegion(NeuralNoteAudioProcessor* processor, Keyboard& keyboard);
+
+    ~CombinedAudioMidiRegion() override;
 
     void setViewportPtr(juce::Viewport* inViewportPtr);
 
     void resized() override;
 
     void paint(Graphics& g) override;
-
-    void timerCallback() override;
 
     bool isInterestedInFileDrag(const StringArray& files) override;
 
@@ -42,25 +43,52 @@ public:
 
     void resizeAccordingToNumSamplesAvailable();
 
-    void mouseDown(const juce::MouseEvent& e) override;
+    void changeListenerCallback(juce::ChangeBroadcaster* source) override;
 
-    const double mNumPixelsPerSecond = 100.0;
+    void setCenterView(bool inShouldCenterView);
+
+    void mouseWheelMove(const MouseEvent& event, const MouseWheelDetails& wheel) override;
+
+    void mouseMagnify(const MouseEvent& event, float scaleFactor) override;
+
+    AudioRegion* getAudioRegion();
+
+    PianoRoll* getPianoRoll();
+
+    const double mBaseNumPixelsPerSecond = 100.0;
 
     const int mAudioRegionHeight = 85;
     const int mHeightBetweenAudioMidi = 23;
     const int mPianoRollY = mAudioRegionHeight + mHeightBetweenAudioMidi;
 
 private:
-    NeuralNoteAudioProcessor& mProcessor;
+    void _onVBlankCallback();
+
+    void _centerViewOnPlayhead();
+
+    bool _isFileTypeSupported(const String& filename) const;
+
+    void _setZoomLevel(double inZoomLevel);
+
+    void valueTreePropertyChanged(ValueTree& treeWhosePropertyHasChanged, const Identifier& property) override;
+
+    NeuralNoteAudioProcessor* mProcessor;
 
     juce::Viewport* mViewportPtr = nullptr;
+    juce::VBlankAttachment mVBlankAttachment;
+
+    const StringArray mSupportedAudioFileExtensions;
+
+    bool mShouldCenterView = false;
 
     int mBaseWidth = 0;
 
+    const double mMaxZoomLevel = 5.0;
+    const double mMinZoomLevel = 0.1;
+    double mZoomLevel = 1.0;
+
     AudioRegion mAudioRegion;
     PianoRoll mPianoRoll;
-
-    std::shared_ptr<juce::FileChooser> mFileChooser;
 };
 
 #endif // CombinedAudioMidiRegion_h

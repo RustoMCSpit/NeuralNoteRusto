@@ -4,7 +4,9 @@
 
 #include "VisualizationPanel.h"
 
-VisualizationPanel::VisualizationPanel(NeuralNoteAudioProcessor& processor)
+#include <NeuralNoteTooltips.h>
+
+VisualizationPanel::VisualizationPanel(NeuralNoteAudioProcessor* processor)
     : mProcessor(processor)
     , mCombinedAudioMidiRegion(processor, mKeyboard)
     , mMidiFileDrag(processor)
@@ -18,64 +20,54 @@ VisualizationPanel::VisualizationPanel(NeuralNoteAudioProcessor& processor)
     mAudioMidiViewport.setScrollBarsShown(false, true, false, false);
     addChildComponent(mMidiFileDrag);
 
-    mFileTempo = std::make_unique<juce::TextEditor>();
-    mFileTempo->setInputRestrictions(6, "0123456789.");
-    mFileTempo->setMultiLine(false, false);
-    mFileTempo->setReadOnly(false);
+    auto tempo_str_validator = [](const String& tempo_str) {
+        if (tempo_str.isEmpty()) {
+            return false;
+        }
 
-    mFileTempo->setFont(LABEL_FONT);
-    mFileTempo->setJustification(juce::Justification::centred);
-
-    mFileTempo->setColour(TextEditor::backgroundColourId, juce::Colours::transparentWhite);
-    mFileTempo->setColour(TextEditor::textColourId, BLACK);
-    mFileTempo->setColour(TextEditor::outlineColourId, juce::Colours::lightgrey);
-    mFileTempo->setColour(TextEditor::focusedOutlineColourId, juce::Colours::grey);
-    mFileTempo->onReturnKey = [this]() { mFileTempo->giveAwayKeyboardFocus(); };
-    mFileTempo->onEscapeKey = [this]() { mFileTempo->giveAwayKeyboardFocus(); };
-    mFileTempo->onFocusLost = [this]() {
-        double tempo = jlimit(5.0, 900.0, mFileTempo->getText().getDoubleValue());
-        String correct_tempo_str = String(tempo);
-        correct_tempo_str = correct_tempo_str.substring(0, jmin(correct_tempo_str.length(), 6));
-        mFileTempo->setText(correct_tempo_str);
-        mProcessor.setMidiFileTempo(tempo);
-    };
-    mFileTempo->onTextChange = [this]() {
-        double tempo = jlimit(5.0, 900.0, mFileTempo->getText().getDoubleValue());
-        mProcessor.setMidiFileTempo(tempo);
+        float tempo = tempo_str.getFloatValue();
+        return tempo >= 20.0f && tempo <= 999.0f;
     };
 
-    mFileTempo->setText(String(mProcessor.getMidiFileTempo()));
+    auto tempo_str_corrector = [](const String& tempo_str) {
+        return tempo_str.isEmpty() ? String("120") : String(jlimit(20.0f, 999.0f, tempo_str.getFloatValue()));
+    };
+
+    mFileTempo = std::make_unique<NumericTextEditor<double>>(
+        mProcessor, NnId::ExportTempoId, 6, 120.0, Justification::centred, tempo_str_validator, tempo_str_corrector);
+    mFileTempo->setTooltip(NeuralNoteTooltips::export_tempo);
     addChildComponent(*mFileTempo);
 
-    mPlayPauseButton.setButtonText("Play");
-    mPlayPauseButton.setClickingTogglesState(true);
-    mPlayPauseButton.setToggleState(false, NotificationType::dontSendNotification);
-    mPlayPauseButton.onClick = [this]() {
-        if (mProcessor.getState() == PopulatedAudioAndMidiRegions) {
-            mProcessor.getPlayer()->setPlayingState(mPlayPauseButton.getToggleState());
-        } else {
-            mPlayPauseButton.setToggleState(false, sendNotification);
-        }
-    };
+    mAudioGainSlider.setSliderStyle(Slider::SliderStyle::LinearHorizontal);
+    mAudioGainSlider.setTextBoxStyle(Slider::TextEntryBoxPosition::TextBoxLeft, true, 40, 20);
+    mAudioGainSlider.setTextValueSuffix(" dB");
+    mAudioGainSlider.setColour(Slider::ColourIds::textBoxTextColourId, BLACK);
+    mAudioGainSlider.setColour(Slider::ColourIds::textBoxOutlineColourId, Colours::transparentWhite);
+    // To also receive mouseExit callback from this slider
+    mAudioGainSlider.addMouseListener(this, true);
+    mAudioGainSlider.setTooltip(NeuralNoteTooltips::source_audio_level);
+    mAudioGainSliderAttachment = std::make_unique<SliderParameterAttachment>(
+        *mProcessor->getParams()[ParameterHelpers::AudioPlayerGainId], mAudioGainSlider);
 
-    mPlayPauseButton.onStateChange = [this]() {
-        if (mPlayPauseButton.getToggleState()) {
-            mPlayPauseButton.setButtonText("Pause");
-        } else {
-            mPlayPauseButton.setButtonText("Play");
-        }
-    };
+    addChildComponent(mAudioGainSlider);
 
-    addAndMakeVisible(mPlayPauseButton);
+    mMidiGainSlider.setSliderStyle(Slider::SliderStyle::LinearHorizontal);
+    mMidiGainSlider.setTextBoxStyle(Slider::TextEntryBoxPosition::TextBoxLeft, true, 40, 20);
+    mMidiGainSlider.setTextValueSuffix(" dB");
+    mMidiGainSlider.setColour(Slider::ColourIds::textBoxTextColourId, BLACK);
+    mMidiGainSlider.setColour(Slider::ColourIds::textBoxOutlineColourId, Colours::transparentWhite);
+    // To also receive mouseExit callback from this slider
+    mMidiGainSlider.addMouseListener(this, true);
+    mMidiGainSlider.setTooltip(NeuralNoteTooltips::internal_synth_level);
 
-    mResetButton.setButtonText("Reset");
-    mResetButton.setClickingTogglesState(false);
-    mResetButton.onClick = [this]() {
-        mProcessor.getPlayer()->reset();
-        mPlayPauseButton.setToggleState(false, juce::sendNotification);
-    };
+    mMidiGainSliderAttachment = std::make_unique<SliderParameterAttachment>(
+        *mProcessor->getParams()[ParameterHelpers::MidiPlayerGainId], mMidiGainSlider);
 
-    addAndMakeVisible(mResetButton);
+    addChildComponent(mMidiGainSlider);
+
+    // Add this as mouse listener of audio region and pianoroll to control visibility of gain sliders
+    mCombinedAudioMidiRegion.getAudioRegion()->addMouseListener(this, true);
+    mCombinedAudioMidiRegion.getPianoRoll()->addMouseListener(this, true);
 }
 
 void VisualizationPanel::resized()
@@ -87,15 +79,20 @@ void VisualizationPanel::resized()
 
     mCombinedAudioMidiRegion.setBaseWidth(getWidth() - KEYBOARD_WIDTH);
     mCombinedAudioMidiRegion.setBounds(KEYBOARD_WIDTH, 0, getWidth() - KEYBOARD_WIDTH, getHeight());
-    mCombinedAudioMidiRegion.timerCallback();
+    mCombinedAudioMidiRegion.changeListenerCallback(mProcessor->getSourceAudioManager()->getAudioThumbnail());
 
     mMidiFileDrag.setBounds(0, mCombinedAudioMidiRegion.mPianoRollY - 13, getWidth(), 13);
-    mFileTempo->setBounds(6, 55, 40, 17);
+    mFileTempo->setBounds(6, 55, 40, 14);
 
-    mPlayPauseButton.setBounds(getWidth() - 100, mCombinedAudioMidiRegion.mPianoRollY + 20, 80, 25);
-    mResetButton.setBounds(getWidth() - 200, mCombinedAudioMidiRegion.mPianoRollY + 20, 80, 25);
+    mAudioGainSlider.setBounds(getWidth() - 205, 3, 200, 20);
+    mMidiGainSlider.setBounds(getWidth() - 205, mCombinedAudioMidiRegion.mPianoRollY + 3, 200, 20);
 
-    startTimerHz(15);
+    mAudioRegionBounds = {KEYBOARD_WIDTH, 0, getWidth() - KEYBOARD_WIDTH, mCombinedAudioMidiRegion.mAudioRegionHeight};
+    mPianoRollBounds = {
+        KEYBOARD_WIDTH,
+        mCombinedAudioMidiRegion.mAudioRegionHeight + mCombinedAudioMidiRegion.mHeightBetweenAudioMidi,
+        getWidth() - KEYBOARD_WIDTH,
+        getHeight() - (mCombinedAudioMidiRegion.mAudioRegionHeight + mCombinedAudioMidiRegion.mHeightBetweenAudioMidi)};
 }
 
 void VisualizationPanel::paint(Graphics& g)
@@ -106,16 +103,8 @@ void VisualizationPanel::paint(Graphics& g)
             Rectangle<int>(0, 0, KEYBOARD_WIDTH, mCombinedAudioMidiRegion.mAudioRegionHeight).toFloat(), 4);
 
         g.setColour(BLACK);
-        g.setFont(LABEL_FONT);
-        g.drawFittedText(
-            "MIDI\nFILE\nTEMPO", Rectangle<int>(0, 0, KEYBOARD_WIDTH, 55), juce::Justification::centred, 3);
-    }
-}
-
-void VisualizationPanel::timerCallback()
-{
-    if (mPlayPauseButton.getToggleState() != mProcessor.getPlayer()->isPlaying()) {
-        mPlayPauseButton.setToggleState(mProcessor.getPlayer()->isPlaying(), sendNotification);
+        g.setFont(UIDefines::LABEL_FONT());
+        g.drawFittedText("MIDI\nFILE\nTEMPO", Rectangle<int>(0, 0, KEYBOARD_WIDTH, 55), Justification::centred, 3);
     }
 }
 
@@ -126,16 +115,6 @@ void VisualizationPanel::clear()
     mFileTempo->setVisible(false);
 }
 
-void VisualizationPanel::startTimerHzAudioThumbnail(int inFreqHz)
-{
-    mCombinedAudioMidiRegion.startTimerHz(inFreqHz);
-}
-
-void VisualizationPanel::stopTimerAudioThumbnail()
-{
-    mCombinedAudioMidiRegion.stopTimer();
-}
-
 void VisualizationPanel::repaintPianoRoll()
 {
     mCombinedAudioMidiRegion.repaintPianoRoll();
@@ -144,7 +123,43 @@ void VisualizationPanel::repaintPianoRoll()
 void VisualizationPanel::setMidiFileDragComponentVisible()
 {
     mMidiFileDrag.setVisible(true);
-
-    mFileTempo->setText(String(mProcessor.getMidiFileTempo()), sendNotification);
     mFileTempo->setVisible(true);
+}
+
+void VisualizationPanel::mouseEnter(const MouseEvent& event)
+{
+    Component::mouseEnter(event);
+
+    if (mProcessor->getState() == PopulatedAudioAndMidiRegions) {
+        if (event.originalComponent == mCombinedAudioMidiRegion.getAudioRegion()) {
+            mAudioGainSlider.setVisible(true);
+        } else if (event.originalComponent == mCombinedAudioMidiRegion.getPianoRoll()) {
+            mMidiGainSlider.setVisible(true);
+        }
+    }
+}
+
+void VisualizationPanel::mouseExit(const MouseEvent& event)
+{
+    Component::mouseExit(event);
+
+    if (mAudioGainSlider.isVisible()) {
+        if (!mAudioRegionBounds.contains(getMouseXYRelative()))
+            mAudioGainSlider.setVisible(false);
+    }
+
+    if (mMidiGainSlider.isVisible()) {
+        if (!mPianoRollBounds.contains(getMouseXYRelative()))
+            mMidiGainSlider.setVisible(false);
+    }
+}
+
+Viewport& VisualizationPanel::getAudioMidiViewport()
+{
+    return mAudioMidiViewport;
+}
+
+CombinedAudioMidiRegion& VisualizationPanel::getCombinedAudioMidiRegion()
+{
+    return mCombinedAudioMidiRegion;
 }

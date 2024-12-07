@@ -2,322 +2,203 @@
 #include "PluginEditor.h"
 
 NeuralNoteAudioProcessor::NeuralNoteAudioProcessor()
-    : mTree(*this, nullptr, "PARAMETERS", createParameterLayout())
-    , mThreadPool(1)
+    : mAPVTS(*this, nullptr, NnId::ParametersId, ParameterHelpers::createParameterLayout())
 {
-    mAudioBufferForMIDITranscription.setSize(1, mMaxNumSamplesToConvert);
-    mAudioBufferForMIDITranscription.clear();
+    // Enable logging or not
+#if 0
+    mLogger.reset(FileLogger::createDefaultAppLogger("/tmp/NeuralNote", "log.txt", "YO! \n"));
+    Logger::setCurrentLogger(mLogger.get());
+#endif
 
-    mJobLambda = [this]() { _runModel(); };
+    for (size_t i = 0; i < mParams.size(); i++) {
+        auto pid = static_cast<ParameterHelpers::ParamIdEnum>(i);
+        mParams[i] = mAPVTS.getParameter(ParameterHelpers::getIdStr(pid));
+    }
 
+    mSourceAudioManager = std::make_unique<SourceAudioManager>(this);
     mPlayer = std::make_unique<Player>(this);
+    mTranscriptionManager = std::make_unique<TranscriptionManager>(this);
 }
 
-AudioProcessorValueTreeState::ParameterLayout NeuralNoteAudioProcessor::createParameterLayout()
+NeuralNoteAudioProcessor::~NeuralNoteAudioProcessor()
 {
-    std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
-
-    auto mute = std::make_unique<juce::AudioParameterBool>(juce::ParameterID {"MUTE", 1}, "Mute", true);
-    params.push_back(std::move(mute));
-
-    return {params.begin(), params.end()};
+    Logger::setCurrentLogger(nullptr);
 }
 
 void NeuralNoteAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
-    mDownSampler.prepareToPlay(sampleRate, samplesPerBlock);
-
-    mMonoBuffer.setSize(1, samplesPerBlock);
-
+    mSourceAudioManager->prepareToPlay(sampleRate, samplesPerBlock);
+    mTranscriptionManager->prepareToPlay(sampleRate);
     mPlayer->prepareToPlay(sampleRate, samplesPerBlock);
 }
 
-void NeuralNoteAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
+void NeuralNoteAudioProcessor::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midiMessages)
 {
-    juce::ignoreUnused(midiMessages);
-    const int num_in_channels = getTotalNumInputChannels();
+    mSourceAudioManager->processBlock(buffer);
+    mTranscriptionManager->processBlock(buffer.getNumSamples());
 
-    // Get tempo and time signature for UI.
-    auto playhead_info = getPlayHead()->getPosition();
-    if (playhead_info.hasValue()) {
-        if (playhead_info->getBpm().hasValue())
-            mCurrentTempo = *playhead_info->getBpm();
-        if (playhead_info->getTimeSignature().hasValue()) {
-            mCurrentTimeSignatureNum = playhead_info->getTimeSignature()->numerator;
-            mCurrentTimeSignatureDenom = playhead_info->getTimeSignature()->denominator;
-        }
-    }
+    auto is_mute = mParams[ParameterHelpers::MuteId]->getValue() > 0.5f;
 
-    if (mState.load() == Recording) {
-        if (!mWasRecording) {
-            mDownSampler.reset();
-            mWasRecording = true;
-            mPlayheadInfoStartRecord = getPlayHead()->getPosition();
-
-            if (mPlayheadInfoStartRecord.hasValue()) {
-                mIsPlayheadPlaying = mPlayheadInfoStartRecord->getIsPlaying();
-            } else {
-                mIsPlayheadPlaying = false;
-            }
-
-            mRhythmOptions.setInfo(false, mPlayheadInfoStartRecord);
-        }
-
-        // If we have reached maximum number of samples that can be processed: stop record and launch processing
-        int num_new_down_samples = mDownSampler.numOutSamplesOnNextProcessBlock(buffer.getNumSamples());
-
-        // If we reach the maximum number of sample that can be gathered,
-        // or the playhead has stopped playing if it was at the start of the recording: stop recording.
-        if (mNumSamplesAcquired + num_new_down_samples >= mMaxNumSamplesToConvert
-            || (mIsPlayheadPlaying && !getPlayHead()->getPosition()->getIsPlaying())) {
-            mWasRecording = false;
-            setStateToProcessing();
-            launchTranscribeJob();
-        } else {
-            mMonoBuffer.copyFrom(0, 0, buffer, 0, 0, buffer.getNumSamples());
-
-            if (num_in_channels == 2) {
-                // Down-mix to mono
-                mMonoBuffer.addFrom(0, 0, buffer, 1, 0, buffer.getNumSamples());
-                buffer.applyGain(1.0f / static_cast<float>(num_in_channels));
-            }
-
-            // Fill buffer with 22050 Hz audio
-            int num_samples_written =
-                mDownSampler.processBlock(mMonoBuffer,
-                                          mAudioBufferForMIDITranscription.getWritePointer(0, mNumSamplesAcquired),
-                                          buffer.getNumSamples());
-
-            jassert(num_samples_written <= num_new_down_samples);
-
-            mNumSamplesAcquired += num_samples_written;
-        }
-    } else {
-        // If we were previously recording but not anymore (user clicked record button to stop it).
-        if (mWasRecording) {
-            mWasRecording = false;
-            launchTranscribeJob();
-        }
-    }
-
-    auto isMute = mTree.getRawParameterValue("MUTE")->load() > 0.5;
-
-    if (isMute)
+    if (is_mute) {
         buffer.clear();
+    }
 
-    mPlayer->processBlock(buffer);
+    mPlayer->processBlock(buffer, midiMessages);
 }
 
-juce::AudioProcessorEditor* NeuralNoteAudioProcessor::createEditor()
+AudioProcessorEditor* NeuralNoteAudioProcessor::createEditor()
 {
     return new NeuralNoteEditor(*this);
 }
 
-void NeuralNoteAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
+void NeuralNoteAudioProcessor::getStateInformation(MemoryBlock& destData)
 {
+    auto full_state_tree = ValueTree(NnId::FullStateId);
+
+    full_state_tree.setProperty(NnId::NeuralNoteVersionId, ProjectInfo::versionString, nullptr);
+
+    // PARAMETERS
+    auto apvts = mAPVTS.copyState();
+    jassert(apvts.getType() == NnId::ParametersId);
+
+    full_state_tree.appendChild(apvts, nullptr);
+
+    // NEURAL NOTE STATE
+    // Update value tree with current state
+    mPlayer->saveStateToValueTree();
+
+    full_state_tree.appendChild(mValueTree, nullptr);
+
+    std::unique_ptr<XmlElement> xml(full_state_tree.createXml());
+
+    if (xml != nullptr) {
+        copyXmlToBinary(*xml, destData);
+    }
 }
 
 void NeuralNoteAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
+    // Create an XmlElement from the binary data
+    std::unique_ptr<XmlElement> xmlState(getXmlFromBinary(data, sizeInBytes));
+
+    if (xmlState != nullptr) {
+        // Convert XmlElement to ValueTree
+        ValueTree full_state_tree = ValueTree::fromXml(*xmlState);
+
+        if (full_state_tree.isValid() && full_state_tree.hasType(NnId::FullStateId)) {
+            // Extract the parameters ValueTree
+            auto parameter_tree = full_state_tree.getChildWithName(NnId::ParametersId);
+
+            ParameterHelpers::updateParametersFromState(parameter_tree, mParams);
+
+        } else {
+            jassertfalse;
+        }
+
+        if (full_state_tree.isValid() && full_state_tree.hasType(NnId::FullStateId)) {
+            auto new_value_tree = full_state_tree.getChildWithName(NnId::NeuralNoteStateId);
+            _updateValueTree(new_value_tree);
+        } else {
+            jassertfalse;
+        }
+    }
 }
 
 void NeuralNoteAudioProcessor::clear()
 {
-    mNumSamplesAcquired = 0;
-    mAudioBufferForMIDITranscription.clear();
+    mPlayer->reset();
+    mSourceAudioManager->clear();
+    mTranscriptionManager->clear();
 
-    mPostProcessedNotes.clear();
-    mPlayheadInfoStartRecord = juce::Optional<juce::AudioPlayHead::PositionInfo>();
-    mDroppedFilename = "";
-
-    mCurrentTempo = -1;
-    mCurrentTimeSignatureNum = -1;
-    mCurrentTimeSignatureDenom = -1;
-
-    mMidiFileTempo = 120.0;
-
-    mBasicPitch.reset();
-    mWasRecording = false;
-    mIsPlayheadPlaying = false;
     mState.store(EmptyAudioAndMidiRegions);
 }
 
-AudioBuffer<float>& NeuralNoteAudioProcessor::getAudioBufferForMidi()
+SourceAudioManager* NeuralNoteAudioProcessor::getSourceAudioManager() const
 {
-    return mAudioBufferForMIDITranscription;
+    return mSourceAudioManager.get();
 }
 
-int NeuralNoteAudioProcessor::getNumSamplesAcquired() const
-{
-    return mNumSamplesAcquired;
-}
-
-double NeuralNoteAudioProcessor::getAudioSampleDuration() const
-{
-    return (double) mNumSamplesAcquired / mBasicPitchSampleRate;
-}
-
-void NeuralNoteAudioProcessor::setNumSamplesAcquired(int inNumSamplesAcquired)
-{
-    mNumSamplesAcquired = inNumSamplesAcquired;
-}
-
-void NeuralNoteAudioProcessor::launchTranscribeJob()
-{
-    jassert(mState.load() == Processing);
-    if (mNumSamplesAcquired >= 1 * AUDIO_SAMPLE_RATE) {
-        mThreadPool.addJob(mJobLambda);
-    } else {
-        clear();
-    }
-}
-
-const std::vector<Notes::Event>& NeuralNoteAudioProcessor::getNoteEventVector() const
-{
-    return mPostProcessedNotes;
-}
-
-NeuralNoteAudioProcessor::Parameters* NeuralNoteAudioProcessor::getCustomParameters()
-{
-    return &mParameters;
-}
-
-const juce::Optional<juce::AudioPlayHead::PositionInfo>& NeuralNoteAudioProcessor::getPlayheadInfoOnRecordStart()
-{
-    return mPlayheadInfoStartRecord;
-}
-
-void NeuralNoteAudioProcessor::_runModel()
-{
-    mBasicPitch.setParameters(mParameters.noteSensibility, mParameters.splitSensibility, mParameters.minNoteDurationMs);
-
-    mBasicPitch.transcribeToMIDI(mAudioBufferForMIDITranscription.getWritePointer(0), mNumSamplesAcquired);
-
-    mNoteOptions.setParameters(NoteUtils::RootNote(mParameters.keyRootNote.load()),
-                               NoteUtils::ScaleType(mParameters.keyType.load()),
-                               NoteUtils::SnapMode(mParameters.keySnapMode.load()),
-                               mParameters.minMidiNote.load(),
-                               mParameters.maxMidiNote.load());
-
-    auto post_processed_notes = mNoteOptions.process(mBasicPitch.getNoteEvents());
-
-    mRhythmOptions.setParameters(RhythmUtils::TimeDivisions(mParameters.rhythmTimeDivision.load()),
-                                 mParameters.rhythmQuantizationForce.load());
-
-    mPostProcessedNotes = mRhythmOptions.quantize(post_processed_notes);
-
-    Notes::dropOverlappingPitchBends(mPostProcessedNotes);
-    Notes::mergeOverlappingNotesWithSamePitch(mPostProcessedNotes);
-
-    // For the synth
-    auto single_events = SynthController::buildMidiEventsVector(mPostProcessedNotes);
-    mPlayer->getSynthController()->setNewMidiEventsVectorToUse(single_events);
-
-    mMidiFileTempo = mCurrentTempo.load() > 0 ? mCurrentTempo.load() : 120;
-
-    mState.store(PopulatedAudioAndMidiRegions);
-}
-
-void NeuralNoteAudioProcessor::updateTranscription()
-{
-    jassert(mState == PopulatedAudioAndMidiRegions);
-
-    if (mState == PopulatedAudioAndMidiRegions) {
-        mBasicPitch.setParameters(
-            mParameters.noteSensibility, mParameters.splitSensibility, mParameters.minNoteDurationMs);
-
-        mBasicPitch.updateMIDI();
-        updatePostProcessing();
-    }
-}
-
-void NeuralNoteAudioProcessor::updatePostProcessing()
-{
-    jassert(mState == PopulatedAudioAndMidiRegions);
-
-    if (mState == PopulatedAudioAndMidiRegions) {
-        mNoteOptions.setParameters(NoteUtils::RootNote(mParameters.keyRootNote.load()),
-                                   NoteUtils::ScaleType(mParameters.keyType.load()),
-                                   NoteUtils::SnapMode(mParameters.keySnapMode.load()),
-                                   mParameters.minMidiNote.load(),
-                                   mParameters.maxMidiNote.load());
-
-        auto post_processed_notes = mNoteOptions.process(mBasicPitch.getNoteEvents());
-
-        mRhythmOptions.setParameters(RhythmUtils::TimeDivisions(mParameters.rhythmTimeDivision.load()),
-                                     mParameters.rhythmQuantizationForce.load());
-
-        mPostProcessedNotes = mRhythmOptions.quantize(post_processed_notes);
-
-        Notes::dropOverlappingPitchBends(mPostProcessedNotes);
-        Notes::mergeOverlappingNotesWithSamePitch(mPostProcessedNotes);
-
-        // For the synth
-        auto single_events = SynthController::buildMidiEventsVector(mPostProcessedNotes);
-        mPlayer->getSynthController()->setNewMidiEventsVectorToUse(single_events);
-    }
-}
-
-void NeuralNoteAudioProcessor::setFileDrop(const std::string& inFilename)
-{
-    mRhythmOptions.setInfo(true);
-    mDroppedFilename = inFilename;
-}
-
-std::string NeuralNoteAudioProcessor::getDroppedFilename() const
-{
-    return mDroppedFilename;
-}
-
-bool NeuralNoteAudioProcessor::canQuantize() const
-{
-    return mRhythmOptions.canPerformQuantization();
-}
-
-std::string NeuralNoteAudioProcessor::getTempoStr() const
-{
-    if (mPlayheadInfoStartRecord.hasValue() && mPlayheadInfoStartRecord->getBpm().hasValue())
-        return std::to_string(static_cast<int>(std::round(*mPlayheadInfoStartRecord->getBpm())));
-    else if (mCurrentTempo > 0)
-        return std::to_string(static_cast<int>(std::round(mCurrentTempo.load())));
-    else
-        return "-";
-}
-
-std::string NeuralNoteAudioProcessor::getTimeSignatureStr() const
-{
-    if (mPlayheadInfoStartRecord.hasValue() && mPlayheadInfoStartRecord->getTimeSignature().hasValue()) {
-        int num = mPlayheadInfoStartRecord->getTimeSignature()->numerator;
-        int denom = mPlayheadInfoStartRecord->getTimeSignature()->denominator;
-        return std::to_string(num) + " / " + std::to_string(denom);
-    } else if (mCurrentTimeSignatureNum > 0 && mCurrentTimeSignatureDenom > 0)
-        return std::to_string(mCurrentTimeSignatureNum.load()) + " / "
-               + std::to_string(mCurrentTimeSignatureDenom.load());
-    else
-        return "- / -";
-}
-
-void NeuralNoteAudioProcessor::setMidiFileTempo(double inMidiFileTempo)
-{
-    mMidiFileTempo = inMidiFileTempo;
-}
-
-double NeuralNoteAudioProcessor::getMidiFileTempo() const
-{
-    return mMidiFileTempo;
-}
-
-bool NeuralNoteAudioProcessor::isJobRunningOrQueued() const
-{
-    return mThreadPool.getNumJobs() > 0;
-}
-
-Player* NeuralNoteAudioProcessor::getPlayer()
+Player* NeuralNoteAudioProcessor::getPlayer() const
 {
     return mPlayer.get();
 }
 
-juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
+TranscriptionManager* NeuralNoteAudioProcessor::getTranscriptionManager() const
+{
+    return mTranscriptionManager.get();
+}
+
+std::array<RangedAudioParameter*, ParameterHelpers::TotalNumParams>& NeuralNoteAudioProcessor::getParams()
+{
+    return mParams;
+}
+
+float NeuralNoteAudioProcessor::getParameterValue(ParameterHelpers::ParamIdEnum inParamId) const
+{
+    return ParameterHelpers::getUnmappedParamValue(mParams[inParamId]);
+}
+
+NeuralNoteMainView* NeuralNoteAudioProcessor::getNeuralNoteMainView() const
+{
+    auto* editor = dynamic_cast<NeuralNoteEditor*>(getActiveEditor());
+
+    if (editor != nullptr) {
+        return editor->getMainView();
+    }
+
+    return nullptr;
+}
+
+AudioProcessorValueTreeState& NeuralNoteAudioProcessor::getAPVTS()
+{
+    return mAPVTS;
+}
+
+ValueTree& NeuralNoteAudioProcessor::getValueTree()
+{
+    return mValueTree;
+}
+
+void NeuralNoteAudioProcessor::addListenerToStateValueTree(ValueTree::Listener* inListener)
+{
+    mValueTree.addListener(inListener);
+}
+
+void NeuralNoteAudioProcessor::removeListenerFromStateValueTree(ValueTree::Listener* inListener)
+{
+    mValueTree.removeListener(inListener);
+}
+
+ValueTree NeuralNoteAudioProcessor::_createDefaultValueTree()
+{
+    ValueTree default_value_tree(NnId::NeuralNoteStateId);
+
+    for (const auto& [id, default_value]: NnId::OrderedStatePropertiesWithDefault) {
+        default_value_tree.setProperty(id, default_value, nullptr);
+    }
+
+    return default_value_tree;
+}
+
+void NeuralNoteAudioProcessor::_updateValueTree(const ValueTree& inNewState)
+{
+    jassert(inNewState.getType() == NnId::NeuralNoteStateId);
+    jassert(mValueTree.getNumProperties() == static_cast<int>(NnId::OrderedStatePropertiesWithDefault.size()));
+
+    if (inNewState.isValid()) {
+        // Set all properties from inNewState to mValueTree, ignoring extra ones if any.
+        // If less, missing properties will be left as is.
+        for (const auto& [prop_id, default_val]: NnId::OrderedStatePropertiesWithDefault) {
+            if (inNewState.hasProperty(prop_id)) {
+                mValueTree.setProperty(prop_id, inNewState.getProperty(prop_id), nullptr);
+            }
+        }
+    } else {
+        jassertfalse;
+    }
+}
+
+AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new NeuralNoteAudioProcessor();
 }
